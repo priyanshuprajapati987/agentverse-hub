@@ -1,0 +1,19 @@
+# AgentVerse Hub - Backend Requirements
+
+# Web Framework
+fastapi
+uvicorn[standard]
+
+# LLM Providers
+openai
+anthropic
+google-generativeai
+ollama
+
+# Utilities
+python-dotenv
+pydantic
+httpx
+
+# Tools
+duckduckgo-search
