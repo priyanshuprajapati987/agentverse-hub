@@ -13,7 +13,7 @@ const CATEGORIES = [
   { id: 'productivity', name: 'Productivity', icon: '⚡' },
 ]
 
-const ALL_TOOLS = ['web_search', 'code_execution', 'file_ops']
+const ALL_TOOLS = ['web_search', 'code_execution']
 
 type View = 'marketplace' | 'chat' | 'builder'
 
@@ -22,7 +22,11 @@ function App() {
   const [category, setCategory] = useState('all')
   const [view, setView] = useState<View>('marketplace')
   const [searchQuery, setSearchQuery] = useState('')
+  const [listError, setListError] = useState<string | null>(null)
+  const [listVersion, setListVersion] = useState(0)
+  const [toolCalls, setToolCalls] = useState<string[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   // Builder state
   const [builderForm, setBuilderForm] = useState({
@@ -62,36 +66,63 @@ function App() {
       localStorage.setItem('agentverse-runs', JSON.stringify(next))
       return next
     })
+    fetch(`/api/agents/${agentId}/run`, { method: 'POST' }).catch(() => {})
   }
 
   const toggleStar = (agentId: string, e: React.MouseEvent) => {
     e.stopPropagation()
+    const wasStarred = starred.has(agentId)
     setStarred(prev => {
       const next = new Set(prev)
-      if (next.has(agentId)) next.delete(agentId)
+      if (wasStarred) next.delete(agentId)
       else next.add(agentId)
       localStorage.setItem('agentverse-starred', JSON.stringify([...next]))
       return next
     })
+    fetch(`/api/agents/${agentId}/star`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delta: wasStarred ? -1 : 1 }),
+    })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) })
+      .catch(() => {
+        setStarred(prev => {
+          const next = new Set(prev)
+          if (wasStarred) next.add(agentId)
+          else next.delete(agentId)
+          localStorage.setItem('agentverse-starred', JSON.stringify([...next]))
+          return next
+        })
+      })
   }
 
   const {
     agents, selectedAgent, messages, isLoading, error,
-    setAgents, selectAgent, addMessage, updateLastMessage, setLoading, setError,
+    setAgents, selectAgent, addMessage, updateLastMessage, removeLastMessage, setLoading, setError,
   } = useStore()
 
   useEffect(() => {
     fetch('/api/agents/')
-      .then(r => r.json())
-      .then(data => setAgents(data.agents))
-      .catch(err => console.error('Failed to fetch agents:', err))
-  }, [setAgents])
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const data = await r.json()
+        if (!Array.isArray(data?.agents)) throw new Error('Invalid agents response')
+        setAgents(data.agents)
+        setListError(null)
+      })
+      .catch(err => {
+        console.error('Failed to fetch agents:', err)
+        setListError(err instanceof Error ? err.message : 'Failed to load agents')
+      })
+  }, [setAgents, listVersion])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
   const [sortBy, setSortBy] = useState<'default' | 'popular' | 'az'>('default')
+
+  const runsOf = (agent: Agent) => agent.run_count ?? runCounts[agent.id] ?? 0
 
   const filteredAgents = agents.filter(a => {
     const catMatch = category === 'all' || (category === 'starred' ? starred.has(a.id) : a.category === category)
@@ -101,7 +132,7 @@ function App() {
     return catMatch && searchMatch
   }).sort((a, b) => {
     if (sortBy === 'popular') {
-      return (runCounts[b.id] || 0) - (runCounts[a.id] || 0)
+      return runsOf(b) - runsOf(a)
     }
     if (sortBy === 'az') {
       return a.name.localeCompare(b.name)
@@ -111,18 +142,28 @@ function App() {
 
   const handleRun = async () => {
     if (!input.trim() || !selectedAgent || isLoading) return
+    const agentId = selectedAgent.id
     const userMsg = input
-    addMessage({ role: 'user', content: userMsg, agentId: selectedAgent.id })
-    addMessage({ role: 'assistant', content: '', agentId: selectedAgent.id })
+    const history = useStore.getState().messages
+      .filter(m => m.content && (!m.agentId || m.agentId === agentId))
+      .slice(-12)
+      .map(m => ({ role: m.role, content: m.content }))
+    addMessage({ role: 'user', content: userMsg, agentId })
+    addMessage({ role: 'assistant', content: '', agentId })
     setLoading(true)
+    setToolCalls([])
     setInput('')
+    const controller = new AbortController()
+    abortRef.current = controller
+    let sawEnd = false
     try {
       const res = await fetch('/api/agents/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: selectedAgent.id, message: userMsg }),
+        body: JSON.stringify({ agent_id: agentId, message: userMsg, history }),
+        signal: controller.signal,
       })
-      if (!res.ok || !res.body) throw new Error('Failed')
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -134,24 +175,38 @@ function App() {
         buffer = lines.pop() || ''
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
+          let data: { type?: string; content?: string; name?: string }
           try {
-            const data = JSON.parse(line.slice(6))
-            if (data.type === 'token') {
-              const msgs = useStore.getState().messages
-              const last = msgs[msgs.length - 1]
-              if (last && last.role === 'assistant') {
-                updateLastMessage(last.content + data.content)
-              }
-            } else if (data.type === 'error') {
-              throw new Error(data.content)
+            data = JSON.parse(line.slice(6))
+          } catch { continue }  // skip unparseable only
+          if (data.type === 'token') {
+            const msgs = useStore.getState().messages
+            const last = msgs[msgs.length - 1]
+            if (last && last.role === 'assistant') {
+              updateLastMessage(last.content + (data.content || ''))
             }
-          } catch { /* skip unparseable */ }
+          } else if (data.type === 'tool' && data.name) {
+            setToolCalls(prev => prev.includes(data.name!) ? prev : [...prev, data.name!])
+          } else if (data.type === 'error') {
+            throw new Error(data.content || 'Agent error')
+          } else if (data.type === 'end') {
+            sawEnd = true
+          }
         }
       }
-      incrementRuns(selectedAgent.id)
+      if (sawEnd) incrementRuns(agentId)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error')
+      const isAbort = err instanceof DOMException && err.name === 'AbortError'
+      if (!isAbort) {
+        setError(err instanceof Error ? err.message : 'Error')
+      }
+      const msgs = useStore.getState().messages
+      const last = msgs[msgs.length - 1]
+      if (last && last.role === 'assistant' && !last.content) {
+        removeLastMessage()
+      }
     } finally {
+      abortRef.current = null
       setLoading(false)
     }
   }
@@ -180,7 +235,11 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(builderForm),
       })
-      if (!res.ok) throw new Error('Failed')
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        const detail = body?.detail
+        throw new Error(Array.isArray(detail) ? detail.map((d: { msg?: string }) => d.msg || d).join('; ') : (detail || `HTTP ${res.status}`))
+      }
       const data = await res.json()
       setBuilderStatus('done')
       setBuilderMsg(`Agent "${builderForm.name}" created! ID: ${data.id}`)
@@ -192,7 +251,7 @@ function App() {
       setBuilderForm({ name: '', description: '', category: 'writing', system_prompt: '', model: 'llama3.2', tools: [], temperature: 0.7 })
     } catch (err) {
       setBuilderStatus('error')
-      setBuilderMsg('Failed to create agent')
+      setBuilderMsg(err instanceof Error ? err.message : 'Failed to create agent')
     }
   }
 
@@ -207,13 +266,13 @@ function App() {
     <div className="h-screen flex flex-col bg-gray-950">
       {/* Header */}
       <header className="border-b border-gray-800 p-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🚀</span>
             <h1 className="text-xl font-bold">AgentVerse Hub</h1>
-            <span className="text-gray-500 text-sm">101 AI Agents</span>
+            <span className="text-gray-500 text-sm">{agents.length} AI Agents</span>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setView('marketplace')}
               className={`px-4 py-2 rounded-lg ${view === 'marketplace' ? 'bg-cyan-600' : 'bg-gray-800 hover:bg-gray-700'}`}
@@ -232,24 +291,24 @@ function App() {
               className={`px-4 py-2 rounded-lg ${view === 'builder' ? 'bg-cyan-600' : 'bg-gray-800 hover:bg-gray-700'}`}
             >
               + Build Agent
-                </button>
-              </div>
+            </button>
+          </div>
 
-              {/* Sort */}
-              <div className="flex items-center gap-2 mb-6">
-                <span className="text-xs text-gray-400">Sort:</span>
-                {([['default', 'Default'], ['popular', '🔥 Popular'], ['az', 'A-Z']] as const).map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => setSortBy(key)}
-                    className={`px-3 py-1.5 rounded-lg text-sm ${
-                      sortBy === key ? 'bg-cyan-600' : 'bg-gray-800 hover:bg-gray-700'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+          {/* Sort */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-400">Sort:</span>
+            {([['default', 'Default'], ['popular', '🔥 Popular'], ['az', 'A-Z']] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setSortBy(key)}
+                className={`px-3 py-1.5 rounded-lg text-sm ${
+                  sortBy === key ? 'bg-cyan-600' : 'bg-gray-800 hover:bg-gray-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -303,9 +362,9 @@ function App() {
                     <div className="flex items-start justify-between mb-2">
                       <h3 className="font-semibold">{agent.name}</h3>
                       <div className="flex gap-1 items-center">
-                        {(runCounts[agent.id] || 0) > 0 && (
+                        {runsOf(agent) > 0 && (
                           <span className="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded" title="Times run">
-                            ▶ {runCounts[agent.id]}
+                            ▶ {runsOf(agent)}
                           </span>
                         )}
                         <button
@@ -350,7 +409,21 @@ function App() {
               </div>
 
               {filteredAgents.length === 0 && (
-                <div className="text-center py-20 text-gray-500">No agents found</div>
+                <div className="text-center py-20 text-gray-500">
+                  {listError ? (
+                    <div>
+                      <p className="mb-4">Failed to load agents: {listError}</p>
+                      <button
+                        onClick={() => setListVersion(v => v + 1)}
+                        className="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded-lg text-white"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : (
+                    'No agents found'
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -512,6 +585,13 @@ function App() {
                     </div>
                   </div>
                 ))}
+                {toolCalls.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {toolCalls.map(tool => (
+                      <span key={tool} className="text-xs bg-gray-800 text-cyan-300 px-2 py-1 rounded">🔧 {tool}</span>
+                    ))}
+                  </div>
+                )}
                 {isLoading && (
                   <div className="flex justify-start">
                     <div className="bg-gray-900 rounded-2xl p-4">
@@ -537,6 +617,14 @@ function App() {
                   className="flex-1 bg-gray-800 px-4 py-3 rounded-xl border border-gray-700 focus:outline-none focus:border-cyan-500"
                   disabled={isLoading}
                 />
+                {isLoading && (
+                  <button
+                    onClick={() => abortRef.current?.abort()}
+                    className="bg-red-600 hover:bg-red-700 px-6 py-3 rounded-xl font-semibold"
+                  >
+                    Stop
+                  </button>
+                )}
                 <button
                   onClick={handleRun}
                   disabled={isLoading || !input.trim()}

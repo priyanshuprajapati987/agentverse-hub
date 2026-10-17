@@ -93,16 +93,31 @@ class TokenBucket:
 class RateLimiter:
     """Per-client token-bucket rate limiter (thread-safe)."""
 
-    def __init__(self, capacity: int = 30, refill_rate: float = 0.5):
+    def __init__(self, capacity: int = 30, refill_rate: float = 0.5,
+                 idle_ttl: float = 600.0, max_buckets: int = 5000):
         self._buckets: dict[str, TokenBucket] = {}
         self._lock = threading.Lock()
         self._capacity = capacity
         self._refill_rate = refill_rate
+        self._idle_ttl = idle_ttl
+        self._max_buckets = max_buckets
+
+    def _prune(self, now: float) -> None:
+        """Drop idle buckets and enforce the size cap (lock must be held)."""
+        idle = [k for k, b in self._buckets.items() if now - b.updated > self._idle_ttl]
+        for k in idle:
+            del self._buckets[k]
+        if len(self._buckets) >= self._max_buckets:
+            ordered = sorted(self._buckets.items(), key=lambda kv: kv[1].updated)
+            excess = len(self._buckets) - self._max_buckets + 1
+            for k, _ in ordered[:excess]:
+                del self._buckets[k]
 
     def check(self, client_id: str) -> bool:
         with self._lock:
             bucket = self._buckets.get(client_id)
             if bucket is None:
+                self._prune(time.monotonic())
                 bucket = TokenBucket(self._capacity, self._refill_rate)
                 self._buckets[client_id] = bucket
             return bucket.consume()
@@ -130,6 +145,27 @@ _limiter = _make_limiter()
 
 def get_limiter() -> RateLimiter:
     return _limiter
+
+
+def _trusted_proxies() -> set:
+    raw = os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1")
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def resolve_client_ip(request: Request) -> str:
+    """Real client IP — honors XFF/X-Real-IP only behind a trusted proxy."""
+    peer = request.client.host if request.client else "unknown"
+    if peer not in _trusted_proxies():
+        return peer
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+    return peer
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +201,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
         # --- rate limit ---
         if self._rate_limit and path not in PUBLIC_PATHS:
-            client = request.client.host if request.client else "unknown"
+            client = resolve_client_ip(request)
             if not _limiter.check(client):
                 return JSONResponse(
                     status_code=429,

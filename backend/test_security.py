@@ -11,6 +11,7 @@ from security import (
     RateLimiter,
     _key_valid,
     _expected_key,
+    resolve_client_ip,
     SecurityMiddleware,
 )
 
@@ -240,3 +241,95 @@ class TestMiddleware:
         assert m._rate_limit is False
         assert m._sanitize is False
         assert m._auth is False
+
+
+# ---------------------------------------------------------------------------
+# Client IP resolution (trusted proxies)
+# ---------------------------------------------------------------------------
+
+def _fake_request(peer: str = "127.0.0.1", headers: dict | None = None):
+    from starlette.requests import Request
+    hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return Request({
+        "type": "http", "method": "GET", "path": "/", "headers": hdrs,
+        "client": (peer, 12345),
+    })
+
+
+class TestResolveClientIP:
+    def test_xff_first_hop_when_trusted(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1,::1")
+        req = _fake_request("127.0.0.1", {"X-Forwarded-For": "9.9.9.9, 8.8.8.8"})
+        assert resolve_client_ip(req) == "9.9.9.9"
+
+    def test_x_real_ip_when_trusted(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1")
+        req = _fake_request("127.0.0.1", {"X-Real-IP": "7.7.7.7"})
+        assert resolve_client_ip(req) == "7.7.7.7"
+
+    def test_xff_ignored_when_peer_untrusted(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1,::1")
+        req = _fake_request("203.0.113.5", {"X-Forwarded-For": "9.9.9.9"})
+        assert resolve_client_ip(req) == "203.0.113.5"
+
+    def test_no_headers_returns_peer(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1")
+        req = _fake_request("127.0.0.1")
+        assert resolve_client_ip(req) == "127.0.0.1"
+
+    def test_middleware_keys_bucket_by_xff_when_trusted(self, monkeypatch):
+        monkeypatch.delenv("AGENTVERSE_API_KEY", raising=False)
+        monkeypatch.setenv("TRUSTED_PROXIES", "testclient")
+        from security import get_limiter
+        get_limiter().reset()
+        from main import app as _app
+        with TestClient(_app) as c:
+            r = c.get("/api/agents/", headers={"X-Forwarded-For": "9.9.9.9, 8.8.8.8"})
+            assert r.status_code == 200
+            buckets = set(get_limiter()._buckets)
+        assert "9.9.9.9" in buckets
+        get_limiter().reset()
+
+    def test_middleware_ignores_xff_when_untrusted(self, monkeypatch):
+        monkeypatch.delenv("AGENTVERSE_API_KEY", raising=False)
+        monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.1")
+        from security import get_limiter
+        get_limiter().reset()
+        from main import app as _app
+        with TestClient(_app) as c:
+            r = c.get("/api/agents/", headers={"X-Forwarded-For": "9.9.9.9"})
+            assert r.status_code == 200
+            buckets = set(get_limiter()._buckets)
+        assert "9.9.9.9" not in buckets
+        get_limiter().reset()
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter pruning
+# ---------------------------------------------------------------------------
+
+class TestRateLimiterPruning:
+    def test_idle_buckets_pruned(self):
+        rl = RateLimiter(capacity=2, refill_rate=0.001, idle_ttl=600.0)
+        rl.check("idle-client")
+        rl._buckets["idle-client"].updated = time.monotonic() - 700
+        rl.check("new-client")
+        assert "idle-client" not in rl._buckets
+        assert "new-client" in rl._buckets
+
+    def test_active_buckets_kept(self):
+        rl = RateLimiter(capacity=2, refill_rate=0.001, idle_ttl=600.0)
+        rl.check("active")
+        rl.check("new")
+        assert "active" in rl._buckets
+
+    def test_cap_evicts_oldest(self):
+        rl = RateLimiter(capacity=10, refill_rate=0.001, idle_ttl=99999.0, max_buckets=5)
+        now = time.monotonic()
+        for i in range(5):
+            rl.check(f"c{i}")
+            rl._buckets[f"c{i}"].updated = now - (100 - i)
+        rl.check("newest")
+        assert len(rl._buckets) <= 5
+        assert "c0" not in rl._buckets
+        assert "newest" in rl._buckets
