@@ -169,3 +169,99 @@ async def delete_agent(agent_id: str):
         del _custom_agents[agent_id]
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Agent not found (templates cannot be deleted)")
+
+
+@router.get("/{agent_id}/export")
+async def export_agent(agent_id: str, format: str = "python"):
+    """Export agent as Python or TypeScript code"""
+    agent = get_template(agent_id)
+    if not agent and agent_id in _custom_agents:
+        agent = _custom_agents[agent_id]
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    tools_str = ", ".join(f'"{t}"' for t in agent.tools)
+
+    if format == "typescript":
+        code = f'''// AgentVerse Hub Export - {agent.name}
+// Category: {agent.category}
+// Tools: {', '.join(agent.tools) if agent.tools else 'none'}
+
+export interface AgentConfig {{
+  name: string;
+  systemPrompt: string;
+  model: string;
+  tools: string[];
+  temperature: number;
+}}
+
+export const agentConfig: AgentConfig = {{
+  name: "{agent.name}",
+  systemPrompt: `{agent.system_prompt.replace('`', "'")}`,
+  model: "{agent.model}",
+  tools: [{tools_str}],
+  temperature: {agent.temperature},
+}};
+
+export async function runAgent(message: string, history: Array<{{role: string, content: string}}> = []) {{
+  const response = await fetch("/api/agents/run", {{
+    method: "POST",
+    headers: {{ "Content-Type": "application/json" }},
+    body: JSON.stringify({{
+      agent_id: "{agent.id}",
+      message,
+      history,
+    }}),
+  }});
+  return response.json();
+}}
+'''
+    else:
+        code = f'''"""
+{agent.name} - AgentVerse Hub Export
+Category: {agent.category}
+Tools: {', '.join(agent.tools) if agent.tools else 'none'}
+"""
+
+import httpx
+from typing import List, Dict, Optional
+
+
+class {agent.name.replace(" ", "").replace("-", "").replace("_", "")}Agent:
+    """{agent.description}"""
+
+    def __init__(self, base_url: str = "http://localhost:8001"):
+        self.base_url = base_url
+        self.agent_id = "{agent.id}"
+        self.config = {{
+            "name": "{agent.name}",
+            "system_prompt": """{agent.system_prompt}""",
+            "model": "{agent.model}",
+            "tools": [{tools_str}],
+            "temperature": {agent.temperature},
+        }}
+
+    async def run(self, message: str, history: Optional[List[Dict]] = None) -> Dict:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{{self.base_url}}/api/agents/run",
+                json={{
+                    "agent_id": self.agent_id,
+                    "message": message,
+                    "history": history or [],
+                }},
+                timeout=120,
+            )
+            return response.json()
+
+
+# Usage
+if __name__ == "__main__":
+    import asyncio
+
+    agent = {agent.name.replace(" ", "").replace("-", "").replace("_", "")}Agent()
+    result = asyncio.run(agent.run("Hello!"))
+    print(result["output"])
+'''
+
+    return {"format": format, "code": code, "agent": agent.name}

@@ -4,11 +4,13 @@
 
 ## ✨ Features
 
-- **65+ Agent Templates** - Ready-to-use agents across Writing, Coding, Research, Marketing
-- **Multi-Model Support** - OpenAI, Anthropic, Ollama, Google
-- **Agent Builder** - Create custom agents with system prompts and tools
+- **101 Agent Templates** - Ready-to-use agents across Writing, Coding, Research, Marketing, Design, Business, Education, Productivity
+- **Multi-Model Support** - Ollama (local), OpenAI, Anthropic, Google
+- **Agent Builder** - Create custom agents with system prompts, tools, and temperature
+- **Agent Export** - Export agents as Python or TypeScript code
 - **Tool Integration** - Web search, code execution, file operations
-- **Live Testing** - Test agents in browser
+- **Live Testing** - Test agents in browser with chat UI
+- **Docker Ready** - One-command deploy with docker-compose
 
 ## 🛠️ Tech Stack
 
@@ -53,6 +55,10 @@ Open http://localhost:3001
 | Coding | 20 | Development, debugging, review |
 | Research | 15 | Analysis, market research, data |
 | Marketing | 15 | SEO, social media, growth |
+| Design | 10 | UI/UX, branding, visual design |
+| Business | 10 | Strategy, finance, operations |
+| Education | 8 | Teaching, tutoring, curriculum |
+| Productivity | 8 | Planning, automation, workflows |
 
 ## 🔧 Tools
 
@@ -68,6 +74,25 @@ Open http://localhost:3001
 - `POST /api/agents/run` - Run an agent
 - `POST /api/agents/create` - Create custom agent
 - `DELETE /api/agents/{id}` - Delete custom agent
+- `GET /api/agents/{id}/export?format=python|typescript` - Export agent as code
+
+## 🐳 Docker
+
+```bash
+# Launch backend (:8001) + frontend (:3001)
+docker-compose up -d
+
+# Open http://localhost:3001
+```
+
+## 🧪 Tests
+
+```bash
+cd backend
+python -m pytest test_api.py -v
+```
+
+**47 tests passing** - templates, engine, tools, router, API endpoints.
 
 ## 🤝 Contributing
 
