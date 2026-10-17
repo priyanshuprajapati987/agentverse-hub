@@ -1,6 +1,6 @@
 """Agent Templates Library"""
 
-from typing import List, Dict, Optional
+from typing import List, Optional
 from agents.engine import AgentConfig
 
 

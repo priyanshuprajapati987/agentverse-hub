@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from agents.engine import AgentConfig, AgentEngine
 from llm.router import get_router
-from templates.registry import get_templates, get_template, get_categories, TEMPLATES
+from templates.registry import get_template, get_categories, TEMPLATES
 
 router = APIRouter()
 
@@ -183,7 +183,7 @@ async def stream_agent(request: AgentRunRequest):
         yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'agent_id': request.agent_id})}\n\n"
 
         try:
-            engine = AgentEngine(agent_config)
+            AgentEngine(agent_config)
             messages = [{"role": "system", "content": agent_config.system_prompt}]
             if request.history:
                 messages.extend(request.history)
