@@ -40,6 +40,25 @@ function App() {
   // Export state
   const [exportData, setExportData] = useState<{ code: string; format: string; agent: string } | null>(null)
 
+  // Starred agents (localStorage)
+  const [starred, setStarred] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('agentverse-starred')
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch { return new Set() }
+  })
+
+  const toggleStar = (agentId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setStarred(prev => {
+      const next = new Set(prev)
+      if (next.has(agentId)) next.delete(agentId)
+      else next.add(agentId)
+      localStorage.setItem('agentverse-starred', JSON.stringify([...next]))
+      return next
+    })
+  }
+
   const {
     agents, selectedAgent, messages, isLoading, error,
     setAgents, selectAgent, addMessage, setLoading, setError,
@@ -57,7 +76,7 @@ function App() {
   }, [messages])
 
   const filteredAgents = agents.filter(a => {
-    const catMatch = category === 'all' || a.category === category
+    const catMatch = category === 'all' || (category === 'starred' ? starred.has(a.id) : a.category === category)
     const searchMatch = !searchQuery ||
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       a.description.toLowerCase().includes(searchQuery.toLowerCase())
@@ -195,6 +214,15 @@ function App() {
                     <span>{cat.name}</span>
                   </button>
                 ))}
+                <button
+                  onClick={() => setCategory('starred')}
+                  className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                    category === 'starred' ? 'bg-yellow-600' : 'bg-gray-800 hover:bg-gray-700'
+                  }`}
+                >
+                  <span>⭐</span>
+                  <span>Starred ({starred.size})</span>
+                </button>
               </div>
 
               {/* Agent Grid */}
@@ -207,7 +235,14 @@ function App() {
                   >
                     <div className="flex items-start justify-between mb-2">
                       <h3 className="font-semibold">{agent.name}</h3>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 items-center">
+                        <button
+                          onClick={e => toggleStar(agent.id, e)}
+                          className={`text-lg transition ${starred.has(agent.id) ? 'text-yellow-400' : 'text-gray-600 hover:text-yellow-400'}`}
+                          title={starred.has(agent.id) ? 'Unstar' : 'Star'}
+                        >
+                          {starred.has(agent.id) ? '★' : '☆'}
+                        </button>
                         {agent.is_template ? (
                           <span className="text-xs bg-gray-800 px-2 py-1 rounded">Template</span>
                         ) : (
