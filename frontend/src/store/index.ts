@@ -26,6 +26,7 @@ interface AppState {
   setAgents: (agents: Agent[]) => void
   selectAgent: (agent: Agent | null) => void
   addMessage: (message: Message) => void
+  updateLastMessage: (content: string) => void
   clearMessages: () => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -41,6 +42,15 @@ export const useStore = create<AppState>((set) => ({
   setAgents: (agents) => set({ agents }),
   selectAgent: (agent) => set({ selectedAgent: agent, messages: [] }),
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
+  updateLastMessage: (content) =>
+    set((s) => {
+      const messages = [...s.messages]
+      const last = messages.length - 1
+      if (last >= 0 && messages[last].role === 'assistant') {
+        messages[last] = { ...messages[last], content }
+      }
+      return { messages }
+    }),
   clearMessages: () => set({ messages: [] }),
   setLoading: (isLoading) => set({ isLoading }),
   setError: (error) => set({ error }),

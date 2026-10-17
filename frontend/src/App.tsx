@@ -77,7 +77,7 @@ function App() {
 
   const {
     agents, selectedAgent, messages, isLoading, error,
-    setAgents, selectAgent, addMessage, setLoading, setError,
+    setAgents, selectAgent, addMessage, updateLastMessage, setLoading, setError,
   } = useStore()
 
   useEffect(() => {
@@ -113,17 +113,41 @@ function App() {
     if (!input.trim() || !selectedAgent || isLoading) return
     const userMsg = input
     addMessage({ role: 'user', content: userMsg, agentId: selectedAgent.id })
+    addMessage({ role: 'assistant', content: '', agentId: selectedAgent.id })
     setLoading(true)
     setInput('')
     try {
-      const res = await fetch('/api/agents/run', {
+      const res = await fetch('/api/agents/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_id: selectedAgent.id, message: userMsg }),
       })
-      if (!res.ok) throw new Error('Failed')
-      const data = await res.json()
-      addMessage({ role: 'assistant', content: data.output, agentId: selectedAgent.id })
+      if (!res.ok || !res.body) throw new Error('Failed')
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const data = JSON.parse(line.slice(6))
+            if (data.type === 'token') {
+              const msgs = useStore.getState().messages
+              const last = msgs[msgs.length - 1]
+              if (last && last.role === 'assistant') {
+                updateLastMessage(last.content + data.content)
+              }
+            } else if (data.type === 'error') {
+              throw new Error(data.content)
+            }
+          } catch { /* skip unparseable */ }
+        }
+      }
       incrementRuns(selectedAgent.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error')

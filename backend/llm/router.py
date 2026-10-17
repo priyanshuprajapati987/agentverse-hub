@@ -55,6 +55,25 @@ class LLMRouter:
             max_tokens=max_tokens,
         )
     
+    async def stream(
+        self,
+        model: str,
+        messages: list[dict],
+        temperature: float = 0.7,
+    ) -> AsyncGenerator[str, None]:
+        """Stream tokens from provider"""
+        provider_name = self._get_provider(model)
+        if provider_name not in self.providers:
+            if self.providers:
+                provider_name = list(self.providers.keys())[0]
+            else:
+                raise ValueError("No LLM providers available")
+        provider = self.providers[provider_name]
+        if not hasattr(provider, "stream"):
+            raise ValueError(f"Provider {provider_name} does not support streaming")
+        async for token in provider.stream(model=model, messages=messages, temperature=temperature):
+            yield token
+    
     def _get_provider(self, model: str) -> str:
         """Extract provider from model name"""
         model_lower = model.lower()

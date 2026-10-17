@@ -1,9 +1,13 @@
 """Agent Routes"""
 
+import json
+import uuid
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from agents.engine import AgentConfig, AgentEngine
+from llm.router import get_router
 from templates.registry import get_templates, get_template, get_categories, TEMPLATES
 
 router = APIRouter()
@@ -159,6 +163,50 @@ async def run_agent(request: AgentRunRequest):
         tool_calls=result.tool_calls,
         tokens_used=result.tokens_used,
         error=result.error,
+    )
+
+
+@router.post("/stream")
+async def stream_agent(request: AgentRunRequest):
+    """Stream agent response via SSE"""
+    agent_config = get_template(request.agent_id)
+    if not agent_config and request.agent_id in _custom_agents:
+        agent_config = _custom_agents[request.agent_id]
+    if not agent_config:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if request.model:
+        agent_config.model = request.model
+
+    async def event_stream():
+        session_id = request.session_id or uuid.uuid4().hex[:8]
+        yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'agent_id': request.agent_id})}\n\n"
+
+        try:
+            engine = AgentEngine(agent_config)
+            messages = [{"role": "system", "content": agent_config.system_prompt}]
+            if request.history:
+                messages.extend(request.history)
+            messages.append({"role": "user", "content": request.message})
+
+            router = get_router()
+            full = []
+            async for token in router.stream(
+                model=agent_config.model,
+                messages=messages,
+                temperature=agent_config.temperature,
+            ):
+                full.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'end', 'content': ''.join(full)})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
 
 

@@ -73,6 +73,7 @@ Open http://localhost:3001
 - `GET /api/agents/{id}` - Get agent details
 - `POST /api/agents/run` - Run an agent
 - `POST /api/agents/create` - Create custom agent
+- `POST /api/agents/stream` - Stream agent response (SSE)
 - `DELETE /api/agents/{id}` - Delete custom agent
 - `GET /api/agents/{id}/export?format=python|typescript` - Export agent as code
 
@@ -82,7 +83,8 @@ Open http://localhost:3001
 # Launch backend (:8001) + frontend (:3001)
 docker-compose up -d
 
-# Open http://localhost:3001
+# Uses host Ollama by default (host.docker.internal:11434)
+# Override: OLLAMA_URL=http://your-ollama:11434 docker-compose up -d
 ```
 
 ## 🧪 Tests
