@@ -48,6 +48,22 @@ function App() {
     } catch { return new Set() }
   })
 
+  // Run counts (localStorage)
+  const [runCounts, setRunCounts] = useState<Record<string, number>>(() => {
+    try {
+      const raw = localStorage.getItem('agentverse-runs')
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  })
+
+  const incrementRuns = (agentId: string) => {
+    setRunCounts(prev => {
+      const next = { ...prev, [agentId]: (prev[agentId] || 0) + 1 }
+      localStorage.setItem('agentverse-runs', JSON.stringify(next))
+      return next
+    })
+  }
+
   const toggleStar = (agentId: string, e: React.MouseEvent) => {
     e.stopPropagation()
     setStarred(prev => {
@@ -75,12 +91,22 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  const [sortBy, setSortBy] = useState<'default' | 'popular' | 'az'>('default')
+
   const filteredAgents = agents.filter(a => {
     const catMatch = category === 'all' || (category === 'starred' ? starred.has(a.id) : a.category === category)
     const searchMatch = !searchQuery ||
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       a.description.toLowerCase().includes(searchQuery.toLowerCase())
     return catMatch && searchMatch
+  }).sort((a, b) => {
+    if (sortBy === 'popular') {
+      return (runCounts[b.id] || 0) - (runCounts[a.id] || 0)
+    }
+    if (sortBy === 'az') {
+      return a.name.localeCompare(b.name)
+    }
+    return 0
   })
 
   const handleRun = async () => {
@@ -98,6 +124,7 @@ function App() {
       if (!res.ok) throw new Error('Failed')
       const data = await res.json()
       addMessage({ role: 'assistant', content: data.output, agentId: selectedAgent.id })
+      incrementRuns(selectedAgent.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error')
     } finally {
@@ -181,8 +208,24 @@ function App() {
               className={`px-4 py-2 rounded-lg ${view === 'builder' ? 'bg-cyan-600' : 'bg-gray-800 hover:bg-gray-700'}`}
             >
               + Build Agent
-            </button>
-          </div>
+                </button>
+              </div>
+
+              {/* Sort */}
+              <div className="flex items-center gap-2 mb-6">
+                <span className="text-xs text-gray-400">Sort:</span>
+                {([['default', 'Default'], ['popular', '🔥 Popular'], ['az', 'A-Z']] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setSortBy(key)}
+                    className={`px-3 py-1.5 rounded-lg text-sm ${
+                      sortBy === key ? 'bg-cyan-600' : 'bg-gray-800 hover:bg-gray-700'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
         </div>
       </header>
 
@@ -236,6 +279,11 @@ function App() {
                     <div className="flex items-start justify-between mb-2">
                       <h3 className="font-semibold">{agent.name}</h3>
                       <div className="flex gap-1 items-center">
+                        {(runCounts[agent.id] || 0) > 0 && (
+                          <span className="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded" title="Times run">
+                            ▶ {runCounts[agent.id]}
+                          </span>
+                        )}
                         <button
                           onClick={e => toggleStar(agent.id, e)}
                           className={`text-lg transition ${starred.has(agent.id) ? 'text-yellow-400' : 'text-gray-600 hover:text-yellow-400'}`}
